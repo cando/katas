@@ -35,6 +35,8 @@ The goal of this exercise is to come up with a solution that is
 * Well-designed: separate clearly the business logic from the infrastructure.
 */
 
+mod model;
+
 fn main() {
     println!("Hello, world!");
 }
