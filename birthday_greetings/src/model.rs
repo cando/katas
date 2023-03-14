@@ -39,6 +39,7 @@ pub trait EmployeeRepository {
     fn get_employees(&self) -> Result<Vec<Employee>, String>;
 }
 
+#[derive(Clone)]
 pub struct Email {
     inner: String,
 }
@@ -58,10 +59,12 @@ impl Email {
     }
 }
 
+#[derive(Debug)]
 pub struct BirthDate {
     inner: NaiveDate,
 }
 
+#[derive(Debug)]
 pub enum BirthDateValidationError {
     InvalidFormat(String),
 }
@@ -82,6 +85,7 @@ pub enum DispatchError {
     GenericError(String),
 }
 
+#[derive(Clone)]
 pub enum Address {
     Email(Email),
     Slack(String),
@@ -97,33 +101,45 @@ pub struct Message {
     pub body: NonEmptyString,
 }
 
-pub struct SlackService();
-
-trait Ops {
+trait EnvelopeDispatcher {
     type Repr<T>;
     fn send(msg: &Envelope) -> Self::Repr<Result<(), DispatchError>>;
 }
 
-impl Ops for SlackService {
+pub struct SlackService();
+impl EnvelopeDispatcher for SlackService {
     type Repr<T> = Box<dyn FnOnce() -> T>;
 
     fn send(_msg: &Envelope) -> Self::Repr<Result<(), DispatchError>> {
         Box::new(|| {
-            // Do stuffs with envelope
+            // Do stuffs with slack
             Ok(())
         })
     }
 }
 
-pub struct BirthdayService {
-    employee_repository: Box<&'static dyn EmployeeRepository>,
+pub struct EmailService();
+impl EnvelopeDispatcher for EmailService {
+    type Repr<T> = Box<dyn FnOnce() -> T>;
+
+    fn send(_msg: &Envelope) -> Self::Repr<Result<(), DispatchError>> {
+        Box::new(|| {
+            // Do stuffs via email
+            Ok(())
+        })
+    }
 }
 
-impl BirthdayService {
+pub struct BirthdayService<'a> {
+    employee_repository: Box<&'a dyn EmployeeRepository>,
+}
+
+impl<'a> BirthdayService<'a> {
     fn send_greetings<Sender>(self) -> Result<(), DispatchError>
     where
-        Sender:
-            Ops<Repr<Result<(), DispatchError>> = Box<dyn FnOnce() -> Result<(), DispatchError>>>,
+        Sender: EnvelopeDispatcher<
+            Repr<Result<(), DispatchError>> = Box<dyn FnOnce() -> Result<(), DispatchError>>,
+        >,
     {
         let employees = self
             .employee_repository
@@ -141,16 +157,74 @@ impl BirthdayService {
                     },
                 };
 
-                Self::send_op::<Sender>(&envelope)()
+                Self::do_send::<Sender>(&envelope)()
             })
             .collect::<Result<Vec<()>, DispatchError>>()?;
         Ok(())
     }
 
-    fn send_op<E>(msg: &Envelope) -> E::Repr<Result<(), DispatchError>>
+    fn do_send<E>(msg: &Envelope) -> E::Repr<Result<(), DispatchError>>
     where
-        E: Ops,
+        E: EnvelopeDispatcher,
     {
-        E::send(msg)
+        E::send(&msg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::*;
+
+    use mockall::mock;
+
+    use crate::model::*;
+
+    mock! {
+        EmployeeRepository{}
+        impl EmployeeRepository for EmployeeRepository {
+            fn get_employees(&self) -> Result<Vec<Employee>, String>;
+        }
+    }
+
+    mock! {
+        SlackService{}
+        impl EnvelopeDispatcher for SlackService {
+            type Repr<T> = Box<dyn FnOnce() -> T>;
+            fn send<'a>(msg: &Envelope<'a>) -> <tests::MockSlackService as EnvelopeDispatcher>::Repr<Result<(), DispatchError>>;
+        }
+    }
+
+    #[test]
+    fn end_to_end_should_send_greetings_with_dependency_injection() {
+        let mut employee_repository_mock = MockEmployeeRepository::new();
+
+        employee_repository_mock
+            .expect_get_employees()
+            .times(1)
+            .returning(|| {
+                Ok(vec![Employee {
+                    address: Address::Slack("pippo".into()),
+                    birth_date: BirthDate::new(NaiveDate::from_ymd_opt(2014, 7, 8).unwrap())
+                        .unwrap(),
+                    name: FullName {
+                        first_name: Name::new("a".into()).unwrap(),
+                        last_name: Name::new("b".into()).unwrap(),
+                    },
+                }])
+            });
+
+        let send_ctx = MockSlackService::send_context();
+        send_ctx
+            .expect()
+            .times(1)
+            .returning(|_| Box::new(|| Ok(())));
+
+        let birthday_service = BirthdayService {
+            employee_repository: Box::new(&employee_repository_mock),
+        };
+
+        assert!(birthday_service
+            .send_greetings::<MockSlackService>()
+            .is_ok())
     }
 }
