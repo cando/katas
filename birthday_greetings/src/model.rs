@@ -36,7 +36,7 @@ pub struct Employee {
 }
 
 pub trait EmployeeRepository {
-    fn get_employees(self) -> Result<Vec<Employee>, ()>;
+    fn get_employees(&self) -> Result<Vec<Employee>, String>;
 }
 
 pub struct Email {
@@ -82,28 +82,13 @@ pub enum DispatchError {
     GenericError(String),
 }
 
-// pub trait Dispatchable {
-//    fn send(envelop: Envelope) -> Result<(), DispatchError>;
-// }
-
-// impl Dispatchable for EmailService {
-//     fn send(envelop: Envelop) -> Result<(), DispatchError> {
-
-//     }
-// }
-
-// pub struct Envelope{
-//     pub to: Box<dyn Dispatchable>,
-//     pub message: Message
-// }
-
 pub enum Address {
     Email(Email),
     Slack(String),
 }
 
-pub struct Envelope {
-    pub to: Address,
+pub struct Envelope<'a> {
+    pub to: &'a Address,
     pub message: Message,
 }
 
@@ -112,56 +97,56 @@ pub struct Message {
     pub body: NonEmptyString,
 }
 
-pub trait DispatcherService {
-    fn send(&self, envelope: &Envelope) -> Result<(), String>;
-    fn can_send(&self, envelope: &Envelope) -> bool;
-}
-pub struct EmailService {}
+pub struct SlackService();
 
-impl DispatcherService for EmailService {
-    fn send(&self, envelope: &Envelope) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn can_send(&self, envelope: &Envelope) -> bool {
-        matches!(envelope.to, Address::Email(_))
-    }
+trait Ops {
+    type Repr<T>;
+    fn send(msg: &Envelope) -> Self::Repr<Result<(), String>>;
 }
 
-pub struct SlackService {}
+impl Ops for SlackService {
+    type Repr<T> = Box<dyn FnOnce() -> T>;
 
-impl DispatcherService for SlackService {
-    fn send(&self, envelope: &Envelope) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn can_send(&self, envelope: &Envelope) -> bool {
-        matches!(envelope.to, Address::Slack(_))
+    fn send(_msg: &Envelope) -> Self::Repr<Result<(), String>> {
+        Box::new(|| {
+            // Do stuffs with envelope
+            Ok(())
+        })
     }
 }
 
 pub struct BirthdayService {
-    employee_repository: Box<dyn EmployeeRepository>,
-    dispatchers: Vec<Box<dyn DispatcherService>>,
+    employee_repository: Box<&'static dyn EmployeeRepository>,
 }
 
 impl BirthdayService {
-    fn send_greetings(self) -> Result<(), ()> {
+    fn send_greetings<Sender>(self) -> Result<(), String>
+    where
+        Sender: Ops<Repr<Result<(), String>> = Box<dyn FnOnce() -> Result<(), String>>>,
+    {
         let employees = self.employee_repository.get_employees()?;
 
-        employees.iter().for_each(|e| {
-            let envelope = Envelope {
-                to: e.address,
-                message: Message {
-                    subject: NonEmptyString::new("ciao".to_owned()).unwrap(),
-                    body: NonEmptyString::new("ciao".to_owned()).unwrap(),
-                },
-            };
-            
-            let a = self.dispatchers.into_iter()
-            .filter(|d| d.can_send(&envelope))
-            .collect::<Vec<Box<dyn DispatcherService>>>().get(0).map(|dispatcher|dispatcher.send(&envelope));
-        });
+        employees
+            .iter()
+            .map(|e| {
+                let envelope = Envelope {
+                    to: &e.address,
+                    message: Message {
+                        subject: NonEmptyString::new("ciao".to_owned()).unwrap(),
+                        body: NonEmptyString::new("ciao".to_owned()).unwrap(),
+                    },
+                };
+
+                Self::send_op::<Sender>(&envelope)()
+            })
+            .collect::<Result<Vec<()>, String>>()?;
         Ok(())
+    }
+
+    fn send_op<E>(msg: &Envelope) -> E::Repr<Result<(), String>>
+    where
+        E: Ops,
+    {
+        E::send(msg)
     }
 }
