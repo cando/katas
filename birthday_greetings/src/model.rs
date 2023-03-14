@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use std::{convert::Infallible, ops::FromResidual};
+
 use chrono::{NaiveDate, Utc};
 
 pub struct NonEmptyString {
@@ -104,85 +106,68 @@ pub struct Message {
 trait EnvelopeDispatcher {
     type Repr<T>;
     fn prepare(employee: &Employee) -> Self::Repr<Envelope>;
-    fn send(msg: Self::Repr<Envelope>) -> Self::Repr<Result<(), DispatchError>>;
+    fn send(msg: Self::Repr<Envelope>) -> Self::Repr<()>;
 }
 
 pub struct SlackService();
 impl EnvelopeDispatcher for SlackService {
-    type Repr<T> = Box<dyn FnOnce() -> T>;
+    type Repr<T> = Result<T, String>;
 
-    fn send(msg_fun: Box<dyn FnOnce() -> Envelope>) -> Self::Repr<Result<(), DispatchError>> {
-        Box::new(|| {
-            // Do stuffs with slack
-            let _msg = msg_fun();
-            Ok(())
-        })
+    fn send(msg: Result<Envelope, String>) -> Result<(), String> {
+        // Do stuffs with slack
+        let _msg = msg?;
+        Ok(())
     }
 
-    fn prepare(e: &Employee) -> Self::Repr<Envelope> {
+    fn prepare(e: &Employee) -> Result<Envelope, String> {
         let addr = e.address.clone();
-        Box::new(|| Envelope {
+        Ok(Envelope {
             to: addr,
             message: Message {
-                subject: NonEmptyString::new("ciao".to_owned()).unwrap(),
-                body: NonEmptyString::new("ciao".to_owned()).unwrap(),
+                subject: NonEmptyString::new("Happy birthday".to_owned()).unwrap(),
+                body: NonEmptyString::new("Happy birthday".to_owned()).unwrap(),
             },
         })
     }
 }
 
-// pub struct EmailService();
-// impl EnvelopeDispatcher for EmailService {
-//     type Repr<T> = Box<dyn FnOnce() -> T>;
+pub struct EmailService();
+impl EnvelopeDispatcher for EmailService {
+    type Repr<T> = Option<T>;
 
-// fn send(msg_fun: Box<dyn FnOnce() -> Envelope>) -> Self::Repr<Result<(), DispatchError>> {
-//     Box::new(|| {
-//         // Do stuffs with email
-//         let _msg = msg_fun();
-//         Ok(())
-//     })
-// }
+    fn send(msg: Option<Envelope>) -> Option<()> {
+        // Do stuffs with slack
+        let _msg = msg?;
+        Some(())
+    }
 
-// fn prepare(e: &Employee) -> Self::Repr<Envelope> {
-//     let addr = e.address.clone();
-//     Box::new(|| Envelope {
-//         to: addr,
-//         message: Message {
-//             subject: NonEmptyString::new("ciao".to_owned()).unwrap(),
-//             body: NonEmptyString::new("ciao".to_owned()).unwrap(),
-//         },
-//     })
-// }
-// }
+    fn prepare(e: &Employee) -> Option<Envelope> {
+        let addr = e.address.clone();
+        Some(Envelope {
+            to: addr,
+            message: Message {
+                subject: NonEmptyString::new("Happy birthday".to_owned()).unwrap(),
+                body: NonEmptyString::new("Happy birthday".to_owned()).unwrap(),
+            },
+        })
+    }
+}
 
 pub struct BirthdayService<'a> {
     employee_repository: Box<&'a dyn EmployeeRepository>,
 }
 
 impl<'a> BirthdayService<'a> {
-    fn send_greetings<Sender>(self) -> Result<(), DispatchError>
-    where
-        Sender: EnvelopeDispatcher<
-            Repr<Result<(), DispatchError>> = Box<dyn FnOnce() -> Result<(), DispatchError>>,
-        >,
-    {
-        let employees = self
-            .employee_repository
-            .get_employees()
-            .map_err(|e| DispatchError::GenericError(e))?;
-
-        employees
-            .iter()
-            .map(|e| Self::do_send::<Sender>(&e)())
-            .collect::<Result<Vec<()>, DispatchError>>()?;
-        Ok(())
-    }
-
-    fn do_send<E>(e: &Employee) -> E::Repr<Result<(), DispatchError>>
+    fn send_greetings<E, R>(self) -> R
     where
         E: EnvelopeDispatcher,
+        R: FromIterator<E::Repr<()>> + FromResidual<Result<Infallible, String>>,
     {
-        E::send(E::prepare(e))
+        self.employee_repository
+            .get_employees()?
+            .iter()
+            .map(|e| E::send(E::prepare(e)))
+            .collect::<R>()
     }
 }
 
@@ -204,9 +189,18 @@ mod tests {
     mock! {
         SlackService{}
         impl EnvelopeDispatcher for SlackService {
-            type Repr<T> = Box<dyn FnOnce() -> T>;
+            type Repr<T> = Result<T, String>;
             fn prepare(e: &Employee) -> <tests::MockSlackService as EnvelopeDispatcher>::Repr<Envelope>;
-            fn send(msg_fun: Box<dyn FnOnce() -> Envelope>) -> <tests::MockSlackService as EnvelopeDispatcher>::Repr<Result<(), DispatchError>>;
+            fn send(msg: <tests::MockSlackService as EnvelopeDispatcher>::Repr<Envelope>) -> <tests::MockSlackService as EnvelopeDispatcher>::Repr<()>;
+        }
+    }
+
+    mock! {
+        EmailService{}
+        impl EnvelopeDispatcher for EmailService {
+            type Repr<T> = Option<T>;
+            fn prepare(e: &Employee) -> <tests::MockEmailService as EnvelopeDispatcher>::Repr<Envelope>;
+            fn send(msg: <tests::MockEmailService as EnvelopeDispatcher>::Repr<Envelope>) -> <tests::MockEmailService as EnvelopeDispatcher>::Repr<()>;
         }
     }
 
@@ -229,9 +223,13 @@ mod tests {
                 }])
             });
 
+        let birthday_service = BirthdayService {
+            employee_repository: Box::new(&employee_repository_mock),
+        };
+
         let prepare_ctx = MockSlackService::prepare_context();
         prepare_ctx.expect().times(1).returning(|_| {
-            Box::new(|| Envelope {
+            Ok(Envelope {
                 to: Address::Slack("pippo".into()),
                 message: Message {
                     subject: NonEmptyString::new("ciao".to_owned()).unwrap(),
@@ -241,17 +239,33 @@ mod tests {
         });
 
         let send_ctx = MockSlackService::send_context();
-        send_ctx
-            .expect()
-            .times(1)
-            .returning(|_| Box::new(|| Ok(())));
+        send_ctx.expect().times(1).returning(|_| Ok(()));
 
-        let birthday_service = BirthdayService {
-            employee_repository: Box::new(&employee_repository_mock),
-        };
-
+        //
+        // Open for extensions, closed for modification! We define target dispatcher and effect only at call site! Everything else does not change!
+        //
         assert!(birthday_service
-            .send_greetings::<MockSlackService>()
-            .is_ok())
+            .send_greetings::<MockSlackService, Result<Vec<()>, String>>() // <----------- MAGIC IS HERE!
+            .is_ok());
+
+        // --------------------------------------------------
+        // OR if we inject a different service, it works!
+        // let prepare_ctx = MockEmailService::prepare_context();
+        // prepare_ctx.expect().times(1).returning(|_| {
+        //     Some(Envelope {
+        //         to: Address::Slack("pippo".into()),
+        //         message: Message {
+        //             subject: NonEmptyString::new("ciao".to_owned()).unwrap(),
+        //             body: NonEmptyString::new("ciao".to_owned()).unwrap(),
+        //         },
+        //     })
+        // });
+
+        // let send_ctx = MockEmailService::send_context();
+        // send_ctx.expect().times(1).returning(|_| Some(()));
+
+        // assert!(birthday_service
+        //     .send_greetings::<MockEmailService, Option<Vec<()>>>() // <----------- MAGIC IS HERE!
+        //     .is_some())
     }
 }

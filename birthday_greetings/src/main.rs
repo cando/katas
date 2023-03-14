@@ -34,7 +34,7 @@ The goal of this exercise is to come up with a solution that is
 * Flexible: we anticipate that the data source in the future could change from a flat file to a relational database, or perhaps a web service. We also anticipate that the email service could soon be replaced with a service that sends greetings through Facebook or some other social network.
 * Well-designed: separate clearly the business logic from the infrastructure.
 */
-
+#![feature(try_trait_v2)]
 mod model;
 
 fn main() {
