@@ -101,13 +101,13 @@ pub struct SlackService();
 
 trait Ops {
     type Repr<T>;
-    fn send(msg: &Envelope) -> Self::Repr<Result<(), String>>;
+    fn send(msg: &Envelope) -> Self::Repr<Result<(), DispatchError>>;
 }
 
 impl Ops for SlackService {
     type Repr<T> = Box<dyn FnOnce() -> T>;
 
-    fn send(_msg: &Envelope) -> Self::Repr<Result<(), String>> {
+    fn send(_msg: &Envelope) -> Self::Repr<Result<(), DispatchError>> {
         Box::new(|| {
             // Do stuffs with envelope
             Ok(())
@@ -120,11 +120,15 @@ pub struct BirthdayService {
 }
 
 impl BirthdayService {
-    fn send_greetings<Sender>(self) -> Result<(), String>
+    fn send_greetings<Sender>(self) -> Result<(), DispatchError>
     where
-        Sender: Ops<Repr<Result<(), String>> = Box<dyn FnOnce() -> Result<(), String>>>,
+        Sender:
+            Ops<Repr<Result<(), DispatchError>> = Box<dyn FnOnce() -> Result<(), DispatchError>>>,
     {
-        let employees = self.employee_repository.get_employees()?;
+        let employees = self
+            .employee_repository
+            .get_employees()
+            .map_err(|e| DispatchError::GenericError(e))?;
 
         employees
             .iter()
@@ -139,11 +143,11 @@ impl BirthdayService {
 
                 Self::send_op::<Sender>(&envelope)()
             })
-            .collect::<Result<Vec<()>, String>>()?;
+            .collect::<Result<Vec<()>, DispatchError>>()?;
         Ok(())
     }
 
-    fn send_op<E>(msg: &Envelope) -> E::Repr<Result<(), String>>
+    fn send_op<E>(msg: &Envelope) -> E::Repr<Result<(), DispatchError>>
     where
         E: Ops,
     {
