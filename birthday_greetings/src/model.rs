@@ -91,8 +91,8 @@ pub enum Address {
     Slack(String),
 }
 
-pub struct Envelope<'a> {
-    pub to: &'a Address,
+pub struct Envelope {
+    pub to: Address,
     pub message: Message,
 }
 
@@ -103,32 +103,57 @@ pub struct Message {
 
 trait EnvelopeDispatcher {
     type Repr<T>;
-    fn send(msg: &Envelope) -> Self::Repr<Result<(), DispatchError>>;
+    fn prepare(employee: &Employee) -> Self::Repr<Envelope>;
+    fn send(msg: Self::Repr<Envelope>) -> Self::Repr<Result<(), DispatchError>>;
 }
 
 pub struct SlackService();
 impl EnvelopeDispatcher for SlackService {
     type Repr<T> = Box<dyn FnOnce() -> T>;
 
-    fn send(_msg: &Envelope) -> Self::Repr<Result<(), DispatchError>> {
+    fn send(msg_fun: Box<dyn FnOnce() -> Envelope>) -> Self::Repr<Result<(), DispatchError>> {
         Box::new(|| {
             // Do stuffs with slack
+            let _msg = msg_fun();
             Ok(())
+        })
+    }
+
+    fn prepare(e: &Employee) -> Self::Repr<Envelope> {
+        let addr = e.address.clone();
+        Box::new(|| Envelope {
+            to: addr,
+            message: Message {
+                subject: NonEmptyString::new("ciao".to_owned()).unwrap(),
+                body: NonEmptyString::new("ciao".to_owned()).unwrap(),
+            },
         })
     }
 }
 
-pub struct EmailService();
-impl EnvelopeDispatcher for EmailService {
-    type Repr<T> = Box<dyn FnOnce() -> T>;
+// pub struct EmailService();
+// impl EnvelopeDispatcher for EmailService {
+//     type Repr<T> = Box<dyn FnOnce() -> T>;
 
-    fn send(_msg: &Envelope) -> Self::Repr<Result<(), DispatchError>> {
-        Box::new(|| {
-            // Do stuffs via email
-            Ok(())
-        })
-    }
-}
+// fn send(msg_fun: Box<dyn FnOnce() -> Envelope>) -> Self::Repr<Result<(), DispatchError>> {
+//     Box::new(|| {
+//         // Do stuffs with email
+//         let _msg = msg_fun();
+//         Ok(())
+//     })
+// }
+
+// fn prepare(e: &Employee) -> Self::Repr<Envelope> {
+//     let addr = e.address.clone();
+//     Box::new(|| Envelope {
+//         to: addr,
+//         message: Message {
+//             subject: NonEmptyString::new("ciao".to_owned()).unwrap(),
+//             body: NonEmptyString::new("ciao".to_owned()).unwrap(),
+//         },
+//     })
+// }
+// }
 
 pub struct BirthdayService<'a> {
     employee_repository: Box<&'a dyn EmployeeRepository>,
@@ -148,26 +173,16 @@ impl<'a> BirthdayService<'a> {
 
         employees
             .iter()
-            .map(|e| {
-                let envelope = Envelope {
-                    to: &e.address,
-                    message: Message {
-                        subject: NonEmptyString::new("ciao".to_owned()).unwrap(),
-                        body: NonEmptyString::new("ciao".to_owned()).unwrap(),
-                    },
-                };
-
-                Self::do_send::<Sender>(&envelope)()
-            })
+            .map(|e| Self::do_send::<Sender>(&e)())
             .collect::<Result<Vec<()>, DispatchError>>()?;
         Ok(())
     }
 
-    fn do_send<E>(msg: &Envelope) -> E::Repr<Result<(), DispatchError>>
+    fn do_send<E>(e: &Employee) -> E::Repr<Result<(), DispatchError>>
     where
         E: EnvelopeDispatcher,
     {
-        E::send(&msg)
+        E::send(E::prepare(e))
     }
 }
 
@@ -190,7 +205,8 @@ mod tests {
         SlackService{}
         impl EnvelopeDispatcher for SlackService {
             type Repr<T> = Box<dyn FnOnce() -> T>;
-            fn send<'a>(msg: &Envelope<'a>) -> <tests::MockSlackService as EnvelopeDispatcher>::Repr<Result<(), DispatchError>>;
+            fn prepare(e: &Employee) -> <tests::MockSlackService as EnvelopeDispatcher>::Repr<Envelope>;
+            fn send(msg_fun: Box<dyn FnOnce() -> Envelope>) -> <tests::MockSlackService as EnvelopeDispatcher>::Repr<Result<(), DispatchError>>;
         }
     }
 
@@ -212,6 +228,17 @@ mod tests {
                     },
                 }])
             });
+
+        let prepare_ctx = MockSlackService::prepare_context();
+        prepare_ctx.expect().times(1).returning(|_| {
+            Box::new(|| Envelope {
+                to: Address::Slack("pippo".into()),
+                message: Message {
+                    subject: NonEmptyString::new("ciao".to_owned()).unwrap(),
+                    body: NonEmptyString::new("ciao".to_owned()).unwrap(),
+                },
+            })
+        });
 
         let send_ctx = MockSlackService::send_context();
         send_ctx
